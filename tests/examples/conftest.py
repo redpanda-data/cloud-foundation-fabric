@@ -18,6 +18,7 @@ import re
 from pathlib import Path
 
 import marko
+import pytest
 
 FABRIC_ROOT = Path(__file__).parents[2]
 
@@ -27,9 +28,18 @@ Example = collections.namedtuple('Example', 'name code module files')
 File = collections.namedtuple('File', 'path content')
 
 
-def pytest_generate_tests(metafunc):
+def get_tftest_directive(s):
+  """Returns tftest directive from code block or None when directive is not found"""
+  for x in s.splitlines():
+    if x.strip().startswith("#") and 'tftest' in x:
+      return x
+  return None
+
+
+def pytest_generate_tests(metafunc, test_group='example',
+                          filter_tests=lambda x: 'skip' not in x):
   """Find all README.md files and collect code examples tagged for testing."""
-  if 'example' in metafunc.fixturenames:
+  if test_group in metafunc.fixturenames:
     readmes = FABRIC_ROOT.glob('**/README.md')
     examples = []
     ids = []
@@ -59,7 +69,8 @@ def pytest_generate_tests(metafunc):
         if isinstance(child, marko.block.FencedCode):
           index += 1
           code = child.children[0].children
-          if 'tftest skip' in code:
+          tftest_tag = get_tftest_directive(code)
+          if tftest_tag and not filter_tests(tftest_tag):
             continue
           if child.lang == 'hcl':
             path = module.relative_to(FABRIC_ROOT)
@@ -67,9 +78,14 @@ def pytest_generate_tests(metafunc):
             if index > 1:
               name += f' {index}'
             ids.append(f'{path}:{last_header}:{index}')
-            examples.append(Example(name, code, path, files[last_header]))
+            # if test is marked with 'serial' in tftest line then add them to this xdist group
+            # this, together with `--dist loadgroup` will ensure that those tests will be run one after another
+            # even if multiple workers are used
+            # see: https://pytest-xdist.readthedocs.io/en/latest/distribution.html
+            marks = [pytest.mark.xdist_group("serial")] if 'serial' in tftest_tag else []
+            examples.append(pytest.param(Example(name, code, path, files[last_header]), marks=marks))
         elif isinstance(child, marko.block.Heading):
           last_header = child.children[0].children
           index = 0
 
-    metafunc.parametrize('example', examples, ids=ids)
+    metafunc.parametrize(test_group, examples, ids=ids)

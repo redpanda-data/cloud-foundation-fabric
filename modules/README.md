@@ -21,7 +21,7 @@ These modules are used in the examples included in this repository. If you are u
 
     ```terraform
     module "project" {
-        source              = "github.com/GoogleCloudPlatform/cloud-foundation-fabric//modules/project?ref=v13.0.0"
+        source              = "github.com/GoogleCloudPlatform/cloud-foundation-fabric//modules/project?ref=v13.0.0&depth=1"
         name                = "my-project"
         billing_account     = "123456-123456-123456"
         parent              = "organizations/123456"
@@ -30,14 +30,14 @@ These modules are used in the examples included in this repository. If you are u
 
 ## Foundational modules
 
-- [billing budget](./billing-budget)
+- [Billing account](./billing-account)
 - [Cloud Identity group](./cloud-identity-group/)
-- [folder](./folder)
-- [service accounts](./iam-service-account)
-- [logging bucket](./logging-bucket)
-- [organization](./organization)
-- [project](./project)
-- [projects-data-source](./projects-data-source)
+- [Folder](./folder)
+- [Service accounts](./iam-service-account)
+- [Logging bucket](./logging-bucket)
+- [Organization](./organization)
+- [Project](./project)
+- [Projects (data source)](./projects-data-source)
 
 ## Networking modules
 
@@ -74,7 +74,6 @@ These modules are used in the examples included in this repository. If you are u
 
 ## Data
 
-- [AlloyDB instance](./alloydb-instance)
 - [BigQuery dataset](./bigquery-dataset)
 - [Bigtable instance](./bigtable-instance)
 - [Dataplex](./dataplex)

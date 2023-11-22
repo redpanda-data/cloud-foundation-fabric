@@ -17,7 +17,7 @@
 locals {
   squid_address = (
     var.mig
-    ? module.squid-ilb.0.forwarding_rule_address
+    ? module.squid-ilb.0.forwarding_rule_addresses[""]
     : module.squid-vm.internal_ip
   )
 }
@@ -167,8 +167,9 @@ module "squid-vm" {
       image = "cos-cloud/cos-stable"
     }
   }
-  service_account        = module.service-account-squid.email
-  service_account_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+  service_account = {
+    email = module.service-account-squid.email
+  }
   metadata = {
     user-data = module.cos-squid.cloud_config
   }
@@ -209,8 +210,12 @@ module "squid-ilb" {
   project_id    = module.project-host.project_id
   region        = var.region
   name          = "squid-ilb"
-  ports         = [3128]
   service_label = "squid-ilb"
+  forwarding_rules_config = {
+    "" = {
+      ports = [3128]
+    }
+  }
   vpc_config = {
     network    = module.vpc.self_link
     subnetwork = module.vpc.subnet_self_links["${var.region}/proxy"]
@@ -270,5 +275,7 @@ module "test-vm" {
     nat        = false
     addresses  = null
   }]
-  service_account_create = true
+  service_account = {
+    auto_create = true
+  }
 }

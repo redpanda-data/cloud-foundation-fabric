@@ -35,31 +35,29 @@ locals {
     : "MIGRATE"
   )
   region = join("-", slice(split("-", var.zone), 0, 2))
-  service_account_email = (
-    var.service_account_create
-    ? (
-      length(google_service_account.service_account) > 0
+  service_account = var.service_account == null ? null : {
+    email = (
+      var.service_account.auto_create
       ? google_service_account.service_account[0].email
-      : null
+      : var.service_account.email
     )
-    : var.service_account
-  )
-  service_account_scopes = (
-    length(var.service_account_scopes) > 0
-    ? var.service_account_scopes
-    : (
-      var.service_account_create
-      ? [
-        "https://www.googleapis.com/auth/cloud-platform",
-        "https://www.googleapis.com/auth/userinfo.email"
-      ]
-      : [
-        "https://www.googleapis.com/auth/devstorage.read_only",
-        "https://www.googleapis.com/auth/logging.write",
-        "https://www.googleapis.com/auth/monitoring.write"
-      ]
+    scopes = (
+      var.service_account.scopes != null ? var.service_account.scopes : (
+        var.service_account.email == null && !var.service_account.auto_create
+        # default scopes for Compute default SA
+        ? [
+          "https://www.googleapis.com/auth/devstorage.read_only",
+          "https://www.googleapis.com/auth/logging.write",
+          "https://www.googleapis.com/auth/monitoring.write"
+        ]
+        # default scopes for own SA
+        : [
+          "https://www.googleapis.com/auth/cloud-platform",
+          "https://www.googleapis.com/auth/userinfo.email"
+        ]
+      )
     )
-  )
+  }
   termination_action = var.options.spot ? coalesce(var.options.termination_action, "STOP") : null
 }
 
@@ -187,7 +185,7 @@ resource "google_compute_instance" "default" {
       source = (
         config.value.source_type == "attach"
         ? config.value.source
-        : google_compute_region_disk.disks[config.key].name
+        : google_compute_region_disk.disks[config.key].id
       )
     }
   }
@@ -218,9 +216,10 @@ resource "google_compute_instance" "default" {
         : [""]
       )
       content {
-        image = var.boot_disk.initialize_params.image
-        size  = var.boot_disk.initialize_params.size
-        type  = var.boot_disk.initialize_params.type
+        image                 = var.boot_disk.initialize_params.image
+        size                  = var.boot_disk.initialize_params.size
+        type                  = var.boot_disk.initialize_params.type
+        resource_manager_tags = var.tag_bindings
       }
     }
   }
@@ -239,6 +238,8 @@ resource "google_compute_instance" "default" {
       network    = config.value.network
       subnetwork = config.value.subnetwork
       network_ip = try(config.value.addresses.internal, null)
+      nic_type   = config.value.nic_type
+      stack_type = config.value.stack_type
       dynamic "access_config" {
         for_each = config.value.nat ? [""] : []
         content {
@@ -253,7 +254,6 @@ resource "google_compute_instance" "default" {
           ip_cidr_range         = config_alias.value
         }
       }
-      nic_type = config.value.nic_type
     }
   }
 
@@ -275,9 +275,12 @@ resource "google_compute_instance" "default" {
     }
   }
 
-  service_account {
-    email  = local.service_account_email
-    scopes = local.service_account_scopes
+  dynamic "service_account" {
+    for_each = var.service_account == null ? [] : [""]
+    content {
+      email  = local.service_account.email
+      scopes = local.service_account.scopes
+    }
   }
 
   dynamic "shielded_instance_config" {
@@ -287,6 +290,13 @@ resource "google_compute_instance" "default" {
       enable_secure_boot          = config.value.enable_secure_boot
       enable_vtpm                 = config.value.enable_vtpm
       enable_integrity_monitoring = config.value.enable_integrity_monitoring
+    }
+  }
+
+  dynamic "params" {
+    for_each = var.tag_bindings == null ? [] : [""]
+    content {
+      resource_manager_tags = var.tag_bindings
     }
   }
 
@@ -373,6 +383,8 @@ resource "google_compute_instance_template" "default" {
       network    = config.value.network
       subnetwork = config.value.subnetwork
       network_ip = try(config.value.addresses.internal, null)
+      nic_type   = config.value.nic_type
+      stack_type = config.value.stack_type
       dynamic "access_config" {
         for_each = config.value.nat ? [""] : []
         content {
@@ -387,7 +399,6 @@ resource "google_compute_instance_template" "default" {
           ip_cidr_range         = config_alias.value
         }
       }
-      nic_type = config.value.nic_type
     }
   }
 
@@ -399,9 +410,12 @@ resource "google_compute_instance_template" "default" {
     provisioning_model          = var.options.spot ? "SPOT" : "STANDARD"
   }
 
-  service_account {
-    email  = local.service_account_email
-    scopes = local.service_account_scopes
+  dynamic "service_account" {
+    for_each = var.service_account == null ? [] : [""]
+    content {
+      email  = local.service_account.email
+      scopes = local.service_account.scopes
+    }
   }
 
   dynamic "shielded_instance_config" {
@@ -442,7 +456,7 @@ resource "google_compute_instance_group" "unmanaged" {
 }
 
 resource "google_service_account" "service_account" {
-  count        = var.service_account_create ? 1 : 0
+  count        = try(var.service_account.auto_create, null) == true ? 1 : 0
   project      = var.project_id
   account_id   = "tf-vm-${var.name}"
   display_name = "Terraform VM ${var.name}."

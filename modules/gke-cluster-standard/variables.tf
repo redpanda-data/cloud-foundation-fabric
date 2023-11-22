@@ -19,15 +19,16 @@ variable "backup_configs" {
   type = object({
     enable_backup_agent = optional(bool, false)
     backup_plans = optional(map(object({
+      region                            = string
+      applications                      = optional(map(list(string)))
       encryption_key                    = optional(string)
       include_secrets                   = optional(bool, true)
       include_volume_data               = optional(bool, true)
       namespaces                        = optional(list(string))
-      region                            = string
-      schedule                          = string
-      retention_policy_days             = optional(string)
+      schedule                          = optional(string)
+      retention_policy_days             = optional(number)
       retention_policy_lock             = optional(bool, false)
-      retention_policy_delete_lock_days = optional(string)
+      retention_policy_delete_lock_days = optional(number)
     })), {})
   })
   default  = {}
@@ -37,11 +38,22 @@ variable "backup_configs" {
 variable "cluster_autoscaling" {
   description = "Enable and configure limits for Node Auto-Provisioning with Cluster Autoscaler."
   type = object({
+    autoscaling_profile = optional(string, "BALANCED")
     auto_provisioning_defaults = optional(object({
       boot_disk_kms_key = optional(string)
+      disk_size         = optional(number)
+      disk_type         = optional(string, "pd-standard")
       image_type        = optional(string)
       oauth_scopes      = optional(list(string))
       service_account   = optional(string)
+      management = optional(object({
+        auto_repair  = optional(bool, true)
+        auto_upgrade = optional(bool, true)
+      }))
+      shielded_instance_config = object({
+        integrity_monitoring = optional(bool, true)
+        secure_boot          = optional(bool, false)
+      })
     }))
     cpu_limits = optional(object({
       min = number
@@ -51,8 +63,28 @@ variable "cluster_autoscaling" {
       min = number
       max = number
     }))
+    gpu_resources = optional(list(object({
+      resource_type = string
+      min           = number
+      max           = number
+    })))
   })
   default = null
+  validation {
+    condition     = (var.cluster_autoscaling == null ? true : contains(["BALANCED", "OPTIMIZE_UTILIZATION"], var.cluster_autoscaling.autoscaling_profile))
+    error_message = "Invalid autoscaling_profile."
+  }
+  validation {
+    condition     = (var.cluster_autoscaling == null ? true : contains(["pd-standard", "pd-ssd", "pd-balanced"], var.cluster_autoscaling.auto_provisioning_defaults.disk_type))
+    error_message = "Invalid disk_type."
+  }
+}
+
+variable "deletion_protection" {
+  description = "Whether or not to allow Terraform to destroy the cluster. Unless this field is set to false in Terraform state, a terraform destroy or terraform apply that would delete the cluster will fail."
+  type        = bool
+  default     = true
+  nullable    = false
 }
 
 variable "description" {
@@ -69,6 +101,7 @@ variable "enable_addons" {
     dns_cache                      = optional(bool, false)
     gce_persistent_disk_csi_driver = optional(bool, false)
     gcp_filestore_csi_driver       = optional(bool, false)
+    gcs_fuse_csi_driver            = optional(bool, false)
     horizontal_pod_autoscaling     = optional(bool, false)
     http_load_balancing            = optional(bool, false)
     istio = optional(object({
@@ -99,6 +132,7 @@ variable "enable_features" {
       key_name = string
     }))
     dataplane_v2         = optional(bool, false)
+    fqdn_network_policy  = optional(bool, false)
     gateway_api          = optional(bool, false)
     groups_for_rbac      = optional(string)
     intranode_visibility = optional(bool, false)
@@ -120,6 +154,12 @@ variable "enable_features" {
   })
   default = {
     workload_identity = true
+  }
+  validation {
+    condition = (
+      var.enable_features.fqdn_network_policy ? var.enable_features.dataplane_v2 : true
+    )
+    error_message = "FQDN network policy is only supported for clusters with Dataplane v2."
   }
 }
 
@@ -151,7 +191,7 @@ variable "logging_config" {
   })
   default  = {}
   nullable = false
-  # System logs are the minimum required component for enabling log collection. 
+  # System logs are the minimum required component for enabling log collection.
   # So either everything is off (false), or enable_system_logs must be true.
   validation {
     condition = (
@@ -197,13 +237,52 @@ variable "min_master_version" {
 }
 
 variable "monitoring_config" {
-  description = "Monitoring components."
+  description = "Monitoring configuration. Google Cloud Managed Service for Prometheus is enabled by default."
   type = object({
-    enable_components  = optional(list(string))
-    managed_prometheus = optional(bool)
+    enable_system_metrics = optional(bool, true)
+
+    # Control plane metrics
+    enable_api_server_metrics         = optional(bool, false)
+    enable_controller_manager_metrics = optional(bool, false)
+    enable_scheduler_metrics          = optional(bool, false)
+
+    # Kube state metrics
+    enable_daemonset_metrics   = optional(bool, false)
+    enable_deployment_metrics  = optional(bool, false)
+    enable_hpa_metrics         = optional(bool, false)
+    enable_pod_metrics         = optional(bool, false)
+    enable_statefulset_metrics = optional(bool, false)
+    enable_storage_metrics     = optional(bool, false)
+
+    # Google Cloud Managed Service for Prometheus
+    enable_managed_prometheus = optional(bool, true)
   })
-  default = {
-    enable_components = ["SYSTEM_COMPONENTS"]
+  default  = {}
+  nullable = false
+  validation {
+    condition = anytrue([
+      var.monitoring_config.enable_api_server_metrics,
+      var.monitoring_config.enable_controller_manager_metrics,
+      var.monitoring_config.enable_scheduler_metrics,
+      var.monitoring_config.enable_daemonset_metrics,
+      var.monitoring_config.enable_deployment_metrics,
+      var.monitoring_config.enable_hpa_metrics,
+      var.monitoring_config.enable_pod_metrics,
+      var.monitoring_config.enable_statefulset_metrics,
+      var.monitoring_config.enable_storage_metrics,
+    ]) ? var.monitoring_config.enable_system_metrics : true
+    error_message = "System metrics are the minimum required component for enabling metrics collection."
+  }
+  validation {
+    condition = anytrue([
+      var.monitoring_config.enable_daemonset_metrics,
+      var.monitoring_config.enable_deployment_metrics,
+      var.monitoring_config.enable_hpa_metrics,
+      var.monitoring_config.enable_pod_metrics,
+      var.monitoring_config.enable_statefulset_metrics,
+      var.monitoring_config.enable_storage_metrics,
+    ]) ? var.monitoring_config.enable_managed_prometheus : true
+    error_message = "Kube state metrics collection requires Google Cloud Managed Service for Prometheus to be enabled."
   }
 }
 
@@ -244,6 +323,12 @@ variable "release_channel" {
   default     = null
 }
 
+variable "service_account" {
+  description = "Service account used for the default node pool, only useful if the default GCE service account has been disabled."
+  type        = string
+  default     = null
+}
+
 variable "tags" {
   description = "Network tags applied to nodes."
   type        = list(string)
@@ -261,9 +346,9 @@ variable "vpc_config" {
       services = string
     }))
     secondary_range_names = optional(object({
-      pods     = string
-      services = string
-    }), { pods = "pods", services = "services" })
+      pods     = optional(string, "pods")
+      services = optional(string, "services")
+    }))
     master_authorized_ranges = optional(map(string))
     stack_type               = optional(string)
   })

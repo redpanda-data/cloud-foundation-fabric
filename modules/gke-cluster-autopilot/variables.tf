@@ -34,6 +34,13 @@ variable "backup_configs" {
   nullable = false
 }
 
+variable "deletion_protection" {
+  description = "Whether or not to allow Terraform to destroy the cluster. Unless this field is set to false in Terraform state, a terraform destroy or terraform apply that would delete the cluster will fail."
+  type        = bool
+  default     = true
+  nullable    = false
+}
+
 variable "description" {
   description = "Cluster description."
   type        = string
@@ -43,21 +50,14 @@ variable "description" {
 variable "enable_addons" {
   description = "Addons enabled in the cluster (true means enabled)."
   type = object({
-    cloudrun                   = optional(bool, false)
-    config_connector           = optional(bool, false)
-    dns_cache                  = optional(bool, false)
-    horizontal_pod_autoscaling = optional(bool, false)
-    http_load_balancing        = optional(bool, false)
+    cloudrun         = optional(bool, false)
+    config_connector = optional(bool, false)
     istio = optional(object({
       enable_tls = bool
     }))
-    kalm           = optional(bool, false)
-    network_policy = optional(bool, false)
+    kalm = optional(bool, false)
   })
-  default = {
-    horizontal_pod_autoscaling = true
-    http_load_balancing        = true
-  }
+  default  = {}
   nullable = false
 }
 
@@ -108,7 +108,7 @@ variable "labels" {
 }
 
 variable "location" {
-  description = "Autopilot cluster are always regional."
+  description = "Autopilot clusters are always regional."
   type        = string
 }
 
@@ -153,18 +153,35 @@ variable "min_master_version" {
 }
 
 variable "monitoring_config" {
-  description = "Monitoring configuration. System metrics collection cannot be disabled for Autopilot clusters. Control plane metrics are optional. Google Cloud Managed Service for Prometheus is enabled by default."
+  description = "Monitoring configuration. System metrics collection cannot be disabled. Control plane metrics are optional. Kube state metrics are optional. Google Cloud Managed Service for Prometheus is enabled by default."
   type = object({
     # Control plane metrics
     enable_api_server_metrics         = optional(bool, false)
     enable_controller_manager_metrics = optional(bool, false)
     enable_scheduler_metrics          = optional(bool, false)
-    # Google Cloud Managed Service for Prometheus
-    # GKE Autopilot clusters running GKE version 1.25 or greater must have this on.
+    # Kube state metrics. Requires managed Prometheus. Requires provider version >= v4.82.0
+    enable_daemonset_metrics   = optional(bool, false)
+    enable_deployment_metrics  = optional(bool, false)
+    enable_hpa_metrics         = optional(bool, false)
+    enable_pod_metrics         = optional(bool, false)
+    enable_statefulset_metrics = optional(bool, false)
+    enable_storage_metrics     = optional(bool, false)
+    # Google Cloud Managed Service for Prometheus. Autopilot clusters version >= 1.25 must have this on.
     enable_managed_prometheus = optional(bool, true)
   })
   default  = {}
   nullable = false
+  validation {
+    condition = anytrue([
+      var.monitoring_config.enable_daemonset_metrics,
+      var.monitoring_config.enable_deployment_metrics,
+      var.monitoring_config.enable_hpa_metrics,
+      var.monitoring_config.enable_pod_metrics,
+      var.monitoring_config.enable_statefulset_metrics,
+      var.monitoring_config.enable_storage_metrics,
+    ]) ? var.monitoring_config.enable_managed_prometheus : true
+    error_message = "Kube state metrics collection requires Google Cloud Managed Service for Prometheus to be enabled."
+  }
 }
 
 variable "name" {
@@ -194,7 +211,7 @@ variable "private_cluster_config" {
 }
 
 variable "project_id" {
-  description = "Cluster project id."
+  description = "Cluster project ID."
   type        = string
 }
 
@@ -218,7 +235,8 @@ variable "service_account" {
 variable "tags" {
   description = "Network tags applied to nodes."
   type        = list(string)
-  default     = null
+  default     = []
+  nullable    = false
 }
 
 variable "vpc_config" {
@@ -232,9 +250,9 @@ variable "vpc_config" {
       services = string
     }))
     secondary_range_names = optional(object({
-      pods     = string
-      services = string
-    }), { pods = "pods", services = "services" })
+      pods     = optional(string, "pods")
+      services = optional(string, "services")
+    }))
     master_authorized_ranges = optional(map(string))
     stack_type               = optional(string)
   })

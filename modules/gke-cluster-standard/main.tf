@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 resource "google_container_cluster" "cluster" {
   provider    = google-beta
   project     = var.project_id
@@ -31,18 +30,21 @@ resource "google_container_cluster" "cluster" {
   enable_intranode_visibility = var.enable_features.intranode_visibility
   enable_l4_ilb_subsetting    = var.enable_features.l4_ilb_subsetting
   enable_shielded_nodes       = var.enable_features.shielded_nodes
+  enable_fqdn_network_policy  = var.enable_features.fqdn_network_policy
   enable_tpu                  = var.enable_features.tpu
   initial_node_count          = 1
   remove_default_node_pool    = true
+  deletion_protection         = var.deletion_protection
   datapath_provider = (
     var.enable_features.dataplane_v2
     ? "ADVANCED_DATAPATH"
     : "DATAPATH_PROVIDER_UNSPECIFIED"
   )
 
-  # the default nodepool is deleted here, use the gke-nodepool module instead
-  # default nodepool configuration based on a shielded_nodes variable
+  # the default node pool is deleted here, use the gke-nodepool module instead.
+  # the default node pool configuration is based on a shielded_nodes variable.
   node_config {
+    service_account = var.service_account
     dynamic "shielded_instance_config" {
       for_each = var.enable_features.shielded_nodes ? [""] : []
       content {
@@ -81,6 +83,9 @@ resource "google_container_cluster" "cluster" {
     gcp_filestore_csi_driver_config {
       enabled = var.enable_addons.gcp_filestore_csi_driver
     }
+    gcs_fuse_csi_driver_config {
+      enabled = var.enable_addons.gcs_fuse_csi_driver
+    }
     kalm_config {
       enabled = var.enable_addons.kalm
     }
@@ -118,13 +123,31 @@ resource "google_container_cluster" "cluster" {
     content {
       enabled = true
 
+      autoscaling_profile = var.cluster_autoscaling.autoscaling_profile
+
       dynamic "auto_provisioning_defaults" {
         for_each = var.cluster_autoscaling.auto_provisioning_defaults != null ? [""] : []
         content {
           boot_disk_kms_key = var.cluster_autoscaling.auto_provisioning_defaults.boot_disk_kms_key
+          disk_size         = var.cluster_autoscaling.auto_provisioning_defaults.disk_size
+          disk_type         = var.cluster_autoscaling.auto_provisioning_defaults.disk_type
           image_type        = var.cluster_autoscaling.auto_provisioning_defaults.image_type
           oauth_scopes      = var.cluster_autoscaling.auto_provisioning_defaults.oauth_scopes
           service_account   = var.cluster_autoscaling.auto_provisioning_defaults.service_account
+          dynamic "management" {
+            for_each = var.cluster_autoscaling.auto_provisioning_defaults.management != null ? [""] : []
+            content {
+              auto_repair  = var.cluster_autoscaling.auto_provisioning_defaults.management.auto_repair
+              auto_upgrade = var.cluster_autoscaling.auto_provisioning_defaults.management.auto_upgrade
+            }
+          }
+          dynamic "shielded_instance_config" {
+            for_each = var.cluster_autoscaling.auto_provisioning_defaults.shielded_instance_config != null ? [""] : []
+            content {
+              enable_integrity_monitoring = var.cluster_autoscaling.auto_provisioning_defaults.shielded_instance_config.integrity_monitoring
+              enable_secure_boot          = var.cluster_autoscaling.auto_provisioning_defaults.shielded_instance_config.secure_boot
+            }
+          }
         }
       }
       dynamic "resource_limits" {
@@ -143,7 +166,19 @@ resource "google_container_cluster" "cluster" {
           maximum       = var.cluster_autoscaling.mem_limits.max
         }
       }
-      // TODO: support GPUs too
+      dynamic "resource_limits" {
+        for_each = (
+          try(var.cluster_autoscaling.gpu_resources, null) == null
+          ? []
+          : var.cluster_autoscaling.gpu_resources
+        )
+        iterator = gpu_resources
+        content {
+          resource_type = gpu_resources.value.resource_type
+          minimum       = gpu_resources.value.min
+          maximum       = gpu_resources.value.max
+        }
+      }
     }
   }
 
@@ -164,12 +199,19 @@ resource "google_container_cluster" "cluster" {
     }
   }
 
+  dynamic "gateway_api_config" {
+    for_each = var.enable_features.gateway_api ? [""] : []
+    content {
+      channel = "CHANNEL_STANDARD"
+    }
+  }
+
   dynamic "ip_allocation_policy" {
     for_each = var.vpc_config.secondary_range_blocks != null ? [""] : []
     content {
       cluster_ipv4_cidr_block  = var.vpc_config.secondary_range_blocks.pods
       services_ipv4_cidr_block = var.vpc_config.secondary_range_blocks.services
-      stack_type               = try(var.vpc_config.stack_type, null)
+      stack_type               = var.vpc_config.stack_type
     }
   }
   dynamic "ip_allocation_policy" {
@@ -177,7 +219,7 @@ resource "google_container_cluster" "cluster" {
     content {
       cluster_secondary_range_name  = var.vpc_config.secondary_range_names.pods
       services_secondary_range_name = var.vpc_config.secondary_range_names.services
-      stack_type                    = try(var.vpc_config.stack_type, null)
+      stack_type                    = var.vpc_config.stack_type
     }
   }
 
@@ -196,19 +238,12 @@ resource "google_container_cluster" "cluster" {
       ]))
     }
   }
-  # Don't send any GKE cluster logs to Cloud Logging. Input variable validation 
+  # Don't send any GKE cluster logs to Cloud Logging. Input variable validation
   # makes sure every other log source is false when enable_system_logs is false.
   dynamic "logging_config" {
     for_each = var.logging_config.enable_system_logs == false ? [""] : []
     content {
       enable_components = []
-    }
-  }
-
-  dynamic "gateway_api_config" {
-    for_each = var.enable_features.gateway_api ? [""] : []
-    content {
-      channel = "CHANNEL_STANDARD"
     }
   }
 
@@ -277,22 +312,28 @@ resource "google_container_cluster" "cluster" {
     }
   }
 
-  dynamic "monitoring_config" {
-    for_each = var.monitoring_config != null ? [""] : []
-    content {
-      enable_components = var.monitoring_config.enable_components
-      dynamic "managed_prometheus" {
-        for_each = (
-          try(var.monitoring_config.managed_prometheus, null) == true ? [""] : []
-        )
-        content {
-          enabled = true
-        }
-      }
+  monitoring_config {
+    enable_components = toset(compact([
+      # System metrics is the minimum requirement if any other metrics are enabled. This is checked by input var validation.
+      var.monitoring_config.enable_system_metrics ? "SYSTEM_COMPONENTS" : null,
+      # Control plane metrics
+      var.monitoring_config.enable_api_server_metrics ? "APISERVER" : null,
+      var.monitoring_config.enable_controller_manager_metrics ? "CONTROLLER_MANAGER" : null,
+      var.monitoring_config.enable_scheduler_metrics ? "SCHEDULER" : null,
+      # Kube state metrics
+      var.monitoring_config.enable_daemonset_metrics ? "DAEMONSET" : null,
+      var.monitoring_config.enable_deployment_metrics ? "DEPLOYMENT" : null,
+      var.monitoring_config.enable_hpa_metrics ? "HPA" : null,
+      var.monitoring_config.enable_pod_metrics ? "POD" : null,
+      var.monitoring_config.enable_statefulset_metrics ? "STATEFULSET" : null,
+      var.monitoring_config.enable_storage_metrics ? "STORAGE" : null,
+    ]))
+    managed_prometheus {
+      enabled = var.monitoring_config.enable_managed_prometheus
     }
   }
 
-  # dataplane v2 has built-in network policies
+  # Dataplane V2 has built-in network policies
   dynamic "network_policy" {
     for_each = (
       var.enable_addons.network_policy && !var.enable_features.dataplane_v2
@@ -410,12 +451,27 @@ resource "google_gke_backup_backup_plan" "backup_plan" {
       }
     }
 
-    all_namespaces = lookup(each.value, "namespaces", null) != null ? null : true
+    all_namespaces = lookup(each.value, "namespaces", null) != null || lookup(each.value, "applications", null) != null ? null : true
     dynamic "selected_namespaces" {
       for_each = each.value.namespaces != null ? [""] : []
       content {
         namespaces = each.value.namespaces
       }
+    }
+    dynamic "selected_applications" {
+      for_each = each.value.applications != null ? [""] : []
+      content {
+        dynamic "namespaced_names" {
+          for_each = flatten([for k, vs in each.value.applications : [
+            for v in vs : { namespace = k, name = v }
+          ]])
+          content {
+            namespace = namespaced_names.value.namespace
+            name      = namespaced_names.value.name
+          }
+        }
+      }
+
     }
   }
 }
@@ -425,11 +481,7 @@ resource "google_compute_network_peering_routes_config" "gke_master" {
   count = (
     try(var.private_cluster_config.peering_config, null) != null ? 1 : 0
   )
-  project = (
-    try(var.private_cluster_config.peering_config, null) == null
-    ? var.project_id
-    : var.private_cluster_config.peering_config.project_id
-  )
+  project = coalesce(var.private_cluster_config.peering_config.project_id, var.project_id)
   peering = try(
     google_container_cluster.cluster.private_cluster_config.0.peering_name,
     null

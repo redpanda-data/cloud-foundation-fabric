@@ -1,5 +1,5 @@
 /**
- * Copyright 2022 Google LLC
+ * Copyright 2023 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
  */
 
 variable "billing_account_id" {
-  description = "Billing account id."
+  description = "Billing account ID."
   type        = string
 }
 
@@ -48,9 +48,25 @@ variable "clusters" {
     max_pods_per_node  = optional(number, 110)
     min_master_version = optional(string)
     monitoring_config = optional(object({
-      enable_components  = optional(list(string), ["SYSTEM_COMPONENTS"])
-      managed_prometheus = optional(bool)
-    }))
+      enable_system_metrics = optional(bool, true)
+
+      # (Optional) control plane metrics
+      enable_api_server_metrics         = optional(bool, false)
+      enable_controller_manager_metrics = optional(bool, false)
+      enable_scheduler_metrics          = optional(bool, false)
+
+      # (Optional) kube state metrics
+      enable_daemonset_metrics   = optional(bool, false)
+      enable_deployment_metrics  = optional(bool, false)
+      enable_hpa_metrics         = optional(bool, false)
+      enable_pod_metrics         = optional(bool, false)
+      enable_statefulset_metrics = optional(bool, false)
+      enable_storage_metrics     = optional(bool, false)
+
+      # Google Cloud Managed Service for Prometheus
+      enable_managed_prometheus = optional(bool, true)
+    }), {})
+
     node_locations         = optional(list(string))
     private_cluster_config = optional(any)
     release_channel        = optional(string)
@@ -71,6 +87,13 @@ variable "clusters" {
   }))
   default  = {}
   nullable = false
+}
+
+variable "deletion_protection" {
+  description = "Prevent Terraform from destroying data storage resources (storage buckets, GKE clusters, CloudSQL instances) in this blueprint. When this field is set in Terraform state, a terraform destroy or terraform apply that would delete data storage resources will fail."
+  type        = bool
+  default     = false
+  nullable    = false
 }
 
 variable "fleet_configmanagement_clusters" {
@@ -176,8 +199,7 @@ variable "nodepools" {
     service_account       = optional(any)
     sole_tenant_nodegroup = optional(string)
     tags                  = optional(list(string))
-    taints = optional(list(object({
-      key    = string
+    taints = optional(map(object({
       value  = string
       effect = string
     })))
